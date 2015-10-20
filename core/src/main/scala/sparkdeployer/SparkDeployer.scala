@@ -123,27 +123,20 @@ class SparkDeployer(val clusterConf: ClusterConf) {
       .run
   }
 
+  private def genConfigXML(config: Map[String, String]): String = {
+      (<configuration>{config.map{ case(k, v) => <property><name>{k}</name><value>{v}</value></property>}}</configuration>).toString
+  }
+
   private def setupHiveSite(address: String, masterAddressOpt: Option[String], machineName: String, hiveWarehouseRaw: String) = {
     val hiveSitePath = clusterConf.sparkDirName + "/conf/hive-site.xml"
     val refinedHiveWarehouse = if (hiveWarehouseRaw == "hdfs") {
       s"hdfs://${masterAddressOpt.getOrElse(address)}:9000/hive_warehouse/"
     } else hiveWarehouseRaw
 
-    val content = s"""
-      <configuration>
-        <property>
-          <name>javax.jdo.option.ConnectionURL</name>
-          <value>jdbc:derby:;databaseName=/home/ec2-user/hive/metastore_db;create=true</value>
-        </property>
-        <property>
-          <name>hive.metastore.warehouse.dir</name>
-          <value>${refinedHiveWarehouse}</value>
-        </property>
-      </configuration>
-      """.split("\n").mkString
+    val hdfsSite = genConfigXML(clusterConf.hdfsSite + ("hive.metastore.warehouse.dir" -> refinedHiveWarehouse))
 
     SSH(address)
-      .withRemoteCommand(s"echo -e '${content}' > $hiveSitePath")
+      .withRemoteCommand(s"echo -e '${hdfsSite}' > $hiveSitePath")
       .withRetry
       .withRunningMessage(s"[${machineName}] Setting hive-site.xml")
       .withErrorMessage(s"[${machineName}] Failed setting hive-site.xml")
@@ -166,18 +159,8 @@ class SparkDeployer(val clusterConf: ClusterConf) {
 
     //setup core-site.xml
     val coreSitePath = clusterConf.hadoopDirName.get + "/etc/hadoop/core-site.xml"
-    val coreSite = s"""
-      <configuration>
-        <property>
-          <name>fs.defaultFS</name>
-          <value>hdfs://${masterAddressOpt.getOrElse(address)}:9000</value>
-        </property>
-        <property>
-          <name>hadoop.tmp.dir</name>
-          <value>file:/tmp/hadoop-tmp</value>
-        </property>
-      </configuration>
-      """.split("\n").mkString
+
+    val coreSite = genConfigXML(clusterConf.coreSite + ("fs.defaultFS" -> masterAddressOpt.getOrElse(address)))
 
     SSH(address).withRemoteCommand(s"echo -e '${coreSite}' > $coreSitePath")
       .withRetry
@@ -187,27 +170,37 @@ class SparkDeployer(val clusterConf: ClusterConf) {
 
     //setup hdfs-site.xml
     val hdfsSitePath = clusterConf.hadoopDirName.get + "/etc/hadoop/hdfs-site.xml"
-    val hdfsSite = """
-      <configuration>
-        <property>
-          <name>dfs.namenode.name.dir</name>
-          <value>file:/home/ec2-user/hdfs/name</value>
-        </property>
-        <property>
-          <name>dfs.datanode.data.dir</name>
-          <value>file:/home/ec2-user/hdfs/data</value>
-        </property>
-        <property>
-          <name>dfs.replication</name>
-          <value>2</value>
-        </property>
-      </configuration>
-      """.split("\n").mkString
+
+    val hdfsSite = genConfigXML(clusterConf.hdfsSite)
 
     SSH(address).withRemoteCommand(s"echo -e '${hdfsSite}' > $hdfsSitePath")
       .withRetry
       .withRunningMessage(s"[${machineName}] Setting hdfs-site.xml")
       .withErrorMessage(s"[${machineName}] Failed setting hdfs-site.xml")
+      .run
+  }
+
+  private def setupYarn(address: String, masterAddressOpt: Option[String], machineName: String) = {
+    //setup mapred-site.xml
+    val mapredSitePath = clusterConf.hadoopDirName.get + "/etc/hadoop/mapred-site.xml"
+
+    val mapredSite = genConfigXML(clusterConf.mapredSite)
+
+    SSH(address).withRemoteCommand(s"echo -e '${mapredSite}' > $mapredSitePath")
+      .withRetry
+      .withRunningMessage(s"[${machineName}] Setting mapred-site.xml")
+      .withErrorMessage(s"[${machineName}] Failed setting mapred-site.xml")
+      .run
+
+    //setup yarn-site.xml
+    val yarnSitePath = clusterConf.hadoopDirName.get + "/etc/hadoop/yarn-site.xml"
+
+    val yarnSite = genConfigXML(clusterConf.yarnSite + ("yarn.resourcemanager.hostname" -> masterAddressOpt.getOrElse(address)))
+
+    SSH(address).withRemoteCommand(s"echo -e '${yarnSite}' > $yarnSitePath")
+      .withRetry
+      .withRunningMessage(s"[${machineName}] Setting yarn-site.xml")
+      .withErrorMessage(s"[${machineName}] Failed setting yarn-site.xml")
       .run
   }
 
@@ -240,6 +233,38 @@ class SparkDeployer(val clusterConf: ClusterConf) {
       .withRemoteCommand(s"./${clusterConf.hadoopDirName.get}/sbin/hadoop-daemon.sh --config /home/ec2-user/${clusterConf.hadoopDirName.get}/etc/hadoop --script hdfs stop datanode")
       .withRunningMessage(s"[$machineName] Stoping datanode")
       .withErrorMessage(s"[$machineName] Failed stoping datanode")
+      .run
+  }
+
+  private def startResourceManager(address: String, machineName: String) = {
+    SSH(address)
+      .withRemoteCommand(s"./${clusterConf.hadoopDirName.get}/sbin/yarn-daemon.sh --config /home/ec2-user/${clusterConf.hadoopDirName.get}/etc/hadoop start resourcemanager")
+      .withRunningMessage(s"[$machineName] Starting resource manager")
+      .withErrorMessage(s"[$machineName] Failed starting resource manager")
+      .run
+  }
+
+  private def startNodeManager(address: String, machineName: String) = {
+    SSH(address)
+      .withRemoteCommand(s"./${clusterConf.hadoopDirName.get}/sbin/yarn-daemon.sh --config /home/ec2-user/${clusterConf.hadoopDirName.get}/etc/hadoop start nodemanager")
+      .withRunningMessage(s"[$machineName] Starting node manager")
+      .withErrorMessage(s"[$machineName] Failed starting node manager")
+      .run
+  }
+
+  private def stopResourceManager(address: String, machineName: String) = {
+    SSH(address)
+      .withRemoteCommand(s"./${clusterConf.hadoopDirName.get}/sbin/yarn-daemon.sh --config /home/ec2-user/${clusterConf.hadoopDirName.get}/etc/hadoop stop resourcemanager")
+      .withRunningMessage(s"[$machineName] Stoping resource manager")
+      .withErrorMessage(s"[$machineName] Failed stoping resource manager")
+      .run
+  }
+  
+  private def stopNodeManager(address: String, machineName: String) = {
+    SSH(address)
+      .withRemoteCommand(s"./${clusterConf.hadoopDirName.get}/sbin/yarn-daemon.sh --config /home/ec2-user/${clusterConf.hadoopDirName.get}/etc/hadoop stop nodemanager")
+      .withRunningMessage(s"[$machineName] Stoping node manager")
+      .withErrorMessage(s"[$machineName] Failed stoping node manager")
       .run
   }
 
@@ -313,6 +338,8 @@ class SparkDeployer(val clusterConf: ClusterConf) {
 
           clusterConf.hadoopTgzUrl.foreach(_ => setupHdfs(address, masterAddressOpt, name))
 
+          clusterConf.hadoopTgzUrl.foreach(_ => setupYarn(address, masterAddressOpt, name))
+
           address
       }
   }
@@ -331,6 +358,7 @@ class SparkDeployer(val clusterConf: ClusterConf) {
             .run
 
           startNamenode(address, masterName)
+          startResourceManager(address, masterName)
         }
 
         //start the master
@@ -357,7 +385,10 @@ class SparkDeployer(val clusterConf: ClusterConf) {
       .map { workerName =>
         createInstance(workerName, clusterConf.workerInstanceType, clusterConf.workerDiskSize, Some(masterAddress))
           .map { address =>
-            clusterConf.hadoopTgzUrl.foreach(_ => startDatanode(address, workerName))
+            clusterConf.hadoopTgzUrl.foreach {_ => 
+              startDatanode(address, workerName)
+              startNodeManager(address, workerName)
+            }
           
             //start the worker
             runSparkSbin(address, "start-slave.sh", Seq(s"spark://$masterAddress:7077"), workerName)
@@ -424,6 +455,12 @@ class SparkDeployer(val clusterConf: ClusterConf) {
       getWorkers().filter(_.state == "running").foreach {
         worker => stopDatanode(worker.address, worker.nameOpt.get)
       }
+      //stop resource manager
+      stopResourceManager(masterAddress, masterName)
+      //stop node manager
+      getWorkers().filter(_.state == "running").foreach {
+        worker => stopNodeManager(worker.address, worker.nameOpt.get)
+      }
     }
   }
   
@@ -444,6 +481,12 @@ class SparkDeployer(val clusterConf: ClusterConf) {
       //start datanodes
       getWorkers().filter(_.state == "running").foreach {
         worker => startDatanode(worker.address, worker.nameOpt.get)
+      }
+      //start resource manager
+      startResourceManager(masterAddress, masterName)
+      //start node manager
+      getWorkers().filter(_.state == "running").foreach {
+        worker => startNodeManager(worker.address, worker.nameOpt.get)
       }
     }
     

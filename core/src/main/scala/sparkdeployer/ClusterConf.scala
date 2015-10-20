@@ -78,6 +78,11 @@ class ClusterConf(configFile: File) {
   val hadoopTgzUrl = config.as[Option[String]]("hadoop-tgz-url")
   val hadoopTgzName = hadoopTgzUrl.map(_.split("/").last)
   val hadoopDirName = hadoopTgzName.map(_.dropRight(4))
+
+  val coreSite   = config.as[Option[Map[String, String]]]("core-site").getOrElse(Map.empty)
+  val hdfsSite   = config.as[Option[Map[String, String]]]("hdfs-site").getOrElse(Map.empty)
+  val mapredSite = config.as[Option[Map[String, String]]]("mapred-site").getOrElse(Map.empty)
+  val yarnSite   = config.as[Option[Map[String, String]]]("yarn-site").getOrElse(Map.empty)
 }
 
 object ClusterConf {
